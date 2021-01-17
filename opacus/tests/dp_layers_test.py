@@ -3,11 +3,13 @@
 import unittest
 
 import torch
-from opacus.layers import DPLSTM, DPMultiheadAttention
 from torch import nn
-from torch.nn import LSTM
+from torch.nn import LSTM, RNN
 from torch.nn.modules.activation import MultiheadAttention
+from torch.nn.utils.rnn import pack_sequence
 from torch.testing import assert_allclose
+
+from opacus.layers import DPLSTM, DPMultiheadAttention
 
 
 class DPLayersTest(unittest.TestCase):
@@ -220,7 +222,6 @@ class ComplexDPLSTMTest(unittest.TestCase):
         self.batch_first = False
 
         self.num_directions = 2 if self.bidirectional else 1
-
         self.h_init = torch.randn(
             self.NUM_LAYERS * self.num_directions,
             self.MINIBATCH_SIZE,
@@ -357,3 +358,68 @@ class ComplexDPLSTMTest(unittest.TestCase):
                 rtol=10e-5,
                 msg=f"Tensor value mismatch in the gradient of parameter '{param_name}'",
             )
+
+
+class PackedDPLSTMTest(unittest.TestCase):
+    def setUp(self):
+        self.INPUT_DIM = 25
+        self.LSTM_OUT_DIM = 12
+        self.NUM_LAYERS = 3
+        self.batch_first = True
+        self.bidirectional = False
+
+        self.original_lstm = LSTM(
+            self.INPUT_DIM,
+            self.LSTM_OUT_DIM,
+            batch_first=self.batch_first,
+            num_layers=self.NUM_LAYERS,
+            bidirectional=self.bidirectional,
+        )
+
+        self.dp_lstm = DPLSTM(
+            self.INPUT_DIM,
+            self.LSTM_OUT_DIM,
+            batch_first=self.batch_first,
+            num_layers=self.NUM_LAYERS,
+            bidirectional=self.bidirectional,
+        )
+
+    @unittest.skip("Implementation in progress: Issue #103")
+    def test_lstm_forward(self):
+        seq_lens = [5, 2]
+        seq_batch = [torch.randn(l, self.INPUT_DIM) for l in seq_lens]
+
+        padded_seq_batch = torch.nn.utils.rnn.pad_sequence(seq_batch, self.batch_first)
+        packed_seq_batch = torch.nn.utils.rnn.pack_padded_sequence(
+            padded_seq_batch, seq_lens, self.batch_first
+        )
+
+        out, (hn, cn) = self.original_lstm(packed_seq_batch.float())
+        dp_out, (dp_hn, dp_cn) = self.dp_lstm(packed_seq_batch.float())
+
+        outputs_to_test = [
+            (out, dp_out, "LSTM and DPLSTM output"),
+            (hn, dp_hn, "LSTM and DPLSTM state `h`"),
+            (cn, dp_cn, "LSTM and DPLSTM state `c`"),
+        ]
+
+        for output, dp_output, message in outputs_to_test:
+            assert_allclose(
+                actual=dp_output.data,
+                expected=output.data,
+                atol=10e-6,
+                rtol=10e-5,
+                msg=f"Tensor value mismatch between {message}",
+            )
+
+    @unittest.skip("Implementation in progress: Issue #103")
+    def test_lstm_backward(self):
+        "Pending"
+
+    @unittest.skip("Implementation in progress: Issue #103")
+    def test_lstm_param_update(self):
+        "Pending"
+
+
+if __name__ == "__main__":
+    unittest.main()
